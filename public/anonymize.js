@@ -137,5 +137,43 @@
     return { preview: preview, map: map };
   }
 
-  return { anonymize: anonymize };
+  /**
+   * 批量同文片段指派：匹配与冲突分类（纯函数，不修改输入）。
+   *
+   * 匹配规则：按原稿从左到右取互不重叠的完全相同片段（从上一匹配末尾之后继续查找）。
+   * 冲突分类（互斥，按优先级归并，三类之和等于匹配总数）：
+   *   1. 与既有显式框选重叠 → clashSelections；
+   *   2. 否则与保留原文例外重叠 → clashExceptions；
+   *   3. 否则 → ok（可处理，确认后新增为显式框选；与称呼命中的重叠不算冲突，
+   *      因为显式框选优先级更高，可覆盖称呼命中）。
+   *
+   * @param {string} text 原稿
+   * @param {string} frag 待批量指派的片段（非空）
+   * @param {Array} selections 既有显式框选 [{ start, end }]
+   * @param {Array} exceptions 保留原文例外 [{ start, end }]
+   * @returns {{ total: number, ok: Array<[number,number]>,
+   *             clashSelections: number, clashExceptions: number }}
+   */
+  function planBatchAssign(text, frag, selections, exceptions) {
+    var result = { total: 0, ok: [], clashSelections: 0, clashExceptions: 0 };
+    if (!frag) return result; // 空片段不匹配（且避免 indexOf('') 死循环）
+    selections = selections || [];
+    exceptions = exceptions || [];
+    var i = text.indexOf(frag);
+    while (i !== -1) {
+      var s = i, e = i + frag.length;
+      result.total++;
+      if (selections.some(function (x) { return s < x.end && e > x.start; })) {
+        result.clashSelections++;
+      } else if (exceptions.some(function (x) { return s < x.end && e > x.start; })) {
+        result.clashExceptions++;
+      } else {
+        result.ok.push([s, e]);
+      }
+      i = text.indexOf(frag, e); // 互不重叠：从上一匹配末尾继续
+    }
+    return result;
+  }
+
+  return { anonymize: anonymize, planBatchAssign: planBatchAssign };
 });

@@ -7,8 +7,9 @@
  * 3. 最长称呼优先：称呼命中之间发生重叠时，更长的称呼优先，长度相同则先出现者优先；
  * 4. 原稿永不改动：匿名结果只体现在预览中，同时维护双向字符区间映射。
  *
- * 标记例外、恢复匿名、添加/删除/合并人物、框选均进入同一个撤销栈；
- * 合并人物为原子操作：一次入栈，撤销时按原 ID、列表位置、称呼与全部关联区间精确恢复。
+ * 标记例外、恢复匿名、添加/删除/合并人物、框选、批量同文指派均进入同一个撤销栈；
+ * 合并人物为原子操作：一次入栈，撤销时按原 ID、列表位置、称呼与全部关联区间精确恢复；
+ * 批量同文指派同样整批一条记录：撤销即恢复操作前的区间集合与匿名预览。
  */
 (function () {
   'use strict';
@@ -19,7 +20,7 @@
     persons: [],       // { id, codename, aliases:[], color }
     selections: [],    // { id, start, end, personId } 显式框选
     exceptions: [],    // { id, start, end, personId } 保留原文例外
-    history: [],       // 撤销栈：person / selection / exception / restore / removePerson / mergePerson
+    history: [],       // 撤销栈：person / selection / exception / restore / removePerson / mergePerson / batchAssign
     currentPreview: '',
     currentMap: []     // { id, kind, oStart, oEnd, pStart, pEnd, personId, explicit, exId }
   };
@@ -41,6 +42,9 @@
   var popupCodename = $('popupCodename'), popupAlias = $('popupAlias');
   var mergeDialog = $('mergeDialog'), mergeTargetEl = $('mergeTarget'), mergeSource = $('mergeSource');
   var mergeCodenames = $('mergeCodenames'), mergeAliases = $('mergeAliases'), mergeCounts = $('mergeCounts');
+  var batchDialog = $('batchDialog'), batchFrag = $('batchFrag'), batchTargetEl = $('batchTarget');
+  var batchTotal = $('batchTotal'), batchOk = $('batchOk');
+  var batchClashSel = $('batchClashSel'), batchClashEx = $('batchClashEx');
   var toastEl = $('toast');
 
   // ---------- 工具 ----------
@@ -347,7 +351,7 @@
   });
 
   // ---------- 规则操作 ----------
-  function addPerson(codename, aliases, recordHistory) {
+  function createPerson(codename, aliases) {
     var person = {
       id: personSeq++,
       codename: codename,
@@ -355,6 +359,11 @@
       color: PALETTE[(personSeq - 2) % PALETTE.length]
     };
     state.persons.push(person);
+    return person;
+  }
+
+  function addPerson(codename, aliases, recordHistory) {
+    var person = createPerson(codename, aliases);
     if (recordHistory !== false) state.history.push({ type: 'person', person: person });
     render();
     return person;
@@ -513,6 +522,74 @@
     toast('已恢复匿名：' + state.text.slice(ex.start, ex.end));
   }
 
+  // ---------- 批量同文片段指派 ----------
+  // 框选弹窗中点「批量指派全文相同片段…」后打开确认弹窗：
+  // 匹配与冲突分类由引擎 Anonymizer.planBatchAssign 完成（左到右、互不重叠；
+  // 框选冲突 > 例外冲突 > 可处理，互斥归类）。确认后只为「可处理」匹配新增显式框选，
+  // 冲突匹配一律跳过、不覆盖原有区间；整批（含随批量新建的人物）作为一条撤销记录。
+  var pendingBatch = null; // { personId|null, newPerson:{codename,aliases}|null, plan }
+
+  function openBatchDialog() {
+    if (!pendingSel) return;
+    var personId = null, newPerson = null, targetName = '';
+    if (popupPerson.value === '__new') {
+      var codename = popupCodename.value.trim();
+      if (!codename) { toast('请先填写新建人物的统一代号'); return; }
+      newPerson = { codename: codename, aliases: parseAliases(popupAlias.value) };
+      targetName = '新建人物「' + codename + '」';
+    } else {
+      var p = personById(Number(popupPerson.value));
+      if (!p) { toast('请先选择目标人物'); return; }
+      personId = p.id;
+      targetName = '「' + p.codename + '」';
+    }
+    var frag = state.text.slice(pendingSel.start, pendingSel.end);
+    var plan = Anonymizer.planBatchAssign(state.text, frag, state.selections, state.exceptions);
+    pendingBatch = { personId: personId, newPerson: newPerson, plan: plan };
+
+    batchFrag.textContent = frag;
+    batchFrag.title = frag;
+    batchTargetEl.textContent = '目标人物：' + targetName;
+    batchTotal.textContent = '全文相同片段共 ' + plan.total + ' 处（从左到右、互不重叠匹配）';
+    batchOk.textContent = '可处理：' + plan.ok.length + ' 处（将新增为显式框选）';
+    batchClashSel.textContent = '与既有显式框选冲突：' + plan.clashSelections + ' 处（跳过）';
+    batchClashEx.textContent = '与保留原文例外冲突：' + plan.clashExceptions + ' 处（跳过）';
+    $('batchConfirm').disabled = plan.ok.length === 0;
+    batchDialog.classList.remove('hidden');
+  }
+
+  function closeBatchDialog() {
+    batchDialog.classList.add('hidden');
+    pendingBatch = null;
+  }
+
+  function confirmBatch() {
+    var batch = pendingBatch;
+    if (!batch || !batch.plan.ok.length) return;
+    // 目标人物：随批量新建的人物不单独入栈，并入整批记录
+    var person = null;
+    var personId = batch.personId;
+    if (batch.newPerson) {
+      person = createPerson(batch.newPerson.codename, batch.newPerson.aliases);
+      personId = person.id;
+    }
+    // 只新增「可处理」匹配，与框选 / 例外冲突的一律跳过，不覆盖原有区间
+    var added = batch.plan.ok.map(function (r) {
+      var sel = { id: selSeq++, start: r[0], end: r[1], personId: personId };
+      state.selections.push(sel);
+      return sel;
+    });
+    // 整批变更作为一条撤销记录
+    state.history.push({ type: 'batchAssign', person: person, selections: added });
+    closeBatchDialog();
+    window.getSelection().removeAllRanges();
+    closePopup();
+    render();
+    var skipped = batch.plan.clashSelections + batch.plan.clashExceptions;
+    toast('已批量新增 ' + added.length + ' 处框选' +
+      (skipped ? '，跳过冲突 ' + skipped + ' 处' : '') + '，可撤销');
+  }
+
   function undo() {
     var action = state.history.pop();
     if (!action) return;
@@ -549,6 +626,19 @@
         action.exceptions.forEach(function (x) { x.personId = action.source.id; });
         state.persons.splice(Math.min(action.sourceIndex, state.persons.length), 0, action.source);
         toast('已撤销合并，恢复人物「' + action.source.codename + '」');
+        break;
+      case 'batchAssign':
+        // 整批撤销：移除本批新增的框选，恢复操作前的区间集合与匿名预览；
+        // 若目标人物随批量新建，一并移除（连同其后续区间，与撤销添加人物语义一致）
+        var batchIds = {};
+        action.selections.forEach(function (s) { batchIds[s.id] = true; });
+        state.selections = state.selections.filter(function (s) { return !batchIds[s.id]; });
+        if (action.person) {
+          state.persons = state.persons.filter(function (p) { return p.id !== action.person.id; });
+          state.selections = state.selections.filter(function (s) { return s.personId !== action.person.id; });
+          state.exceptions = state.exceptions.filter(function (x) { return x.personId !== action.person.id; });
+        }
+        toast('已撤销批量同文指派（' + action.selections.length + ' 处）');
         break;
     }
     render();
@@ -636,7 +726,22 @@
     closePopup();
   });
 
+  // ---------- 批量同文指派弹窗 ----------
+  $('popupBatch').addEventListener('click', openBatchDialog);
+
+  $('batchConfirm').addEventListener('click', confirmBatch);
+
+  $('batchCancel').addEventListener('click', closeBatchDialog);
+
+  batchDialog.addEventListener('mousedown', function (e) {
+    if (e.target === batchDialog) {
+      closeBatchDialog();     // 点击遮罩关闭（框选弹窗保留，可继续调整）
+      e.stopPropagation();    // 阻止 document 的联动关闭逻辑
+    }
+  });
+
   document.addEventListener('mousedown', function (e) {
+    if (!batchDialog.classList.contains('hidden')) return; // 批量弹窗打开时不联动关闭框选弹窗
     if (!selPopup.classList.contains('hidden') && !selPopup.contains(e.target) && e.target !== originalView) {
       // 点击弹窗以外区域时关闭（在原稿上重新框选会由 mouseup 重新打开）
       if (!originalView.contains(e.target)) closePopup();
@@ -644,7 +749,7 @@
   });
 
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape') { closePopup(); closeMergeDialog(); }
+    if (e.key === 'Escape') { closePopup(); closeMergeDialog(); closeBatchDialog(); }
   });
 
   // ---------- 合并人物弹窗 ----------
@@ -678,6 +783,7 @@
     state.exceptions = [];
     state.history = [];
     closeMergeDialog();
+    closeBatchDialog();
     inputSection.classList.add('hidden');
     editorSection.classList.remove('hidden');
     $('btnResetText').classList.remove('hidden');
@@ -692,6 +798,7 @@
     inputSection.classList.remove('hidden');
     $('btnResetText').classList.add('hidden');
     closeMergeDialog();
+    closeBatchDialog();
     state.text = '';
     state.persons = [];
     state.selections = [];

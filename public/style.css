@@ -317,6 +317,25 @@ body {
 .merge-aliases .merge-label { color: #6a7480; }
 .merge-counts { color: #4a5568; }
 
+/* 批量同文片段指派确认弹窗 */
+#popupBatch { width: 100%; }
+.batch-frag {
+  font-weight: 600;
+  background: #fff8e0;
+  border: 1px solid #e6d8a0;
+  border-radius: 6px;
+  padding: 4px 8px;
+  word-break: break-all;
+  max-height: 72px;
+  overflow-y: auto;
+}
+.batch-target { font-size: 13px; }
+.batch-counts { display: flex; flex-direction: column; gap: 3px; }
+.batch-ok { color: #1a7f37; font-weight: 600; }
+.batch-clash-sel { color: #9a6700; }
+.batch-clash-ex { color: #cf222e; }
+.batch-note { font-size: 12px; color: #8a94a0; line-height: 1.6; }
+
 .toast {
   position: fixed;
   left: 50%;

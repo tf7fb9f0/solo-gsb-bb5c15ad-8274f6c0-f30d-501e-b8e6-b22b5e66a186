@@ -30,7 +30,7 @@
   <main id="editorSection" class="hidden">
     <div class="panes">
       <section class="card pane">
-        <h2>原稿 <span class="hint">（用鼠标框选片段可指派给人物；原稿内容不会被改动）</span></h2>
+        <h2>原稿 <span class="hint">（用鼠标框选片段可指派给人物，也可批量指派全文相同片段；原稿内容不会被改动）</span></h2>
         <div id="originalView" class="view" data-side="original"></div>
       </section>
 
@@ -84,9 +84,32 @@
       <input id="popupCodename" placeholder="统一代号，如：受访者A">
       <input id="popupAlias" placeholder="登记称呼（留空则仅此一处生效）">
     </div>
+    <button id="popupBatch" class="btn" title="把全文中与所选片段完全相同的所有片段统一指派给该人物（可撤销）">批量指派全文相同片段…</button>
     <div class="popup-actions">
       <button id="popupOk" class="btn btn-primary">确定</button>
       <button id="popupCancel" class="btn">取消</button>
+    </div>
+  </div>
+
+  <!-- 批量同文片段指派确认弹窗 -->
+  <div id="batchDialog" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-title">批量同文片段指派</div>
+      <div class="merge-preview">
+        <div id="batchFrag" class="batch-frag"></div>
+        <div id="batchTarget" class="batch-target"></div>
+        <div class="batch-counts">
+          <div id="batchTotal"></div>
+          <div id="batchOk" class="batch-ok"></div>
+          <div id="batchClashSel" class="batch-clash-sel"></div>
+          <div id="batchClashEx" class="batch-clash-ex"></div>
+        </div>
+        <div class="batch-note">仅新增「可处理」区间为显式框选；冲突匹配一律跳过，不覆盖原有区间。整批作为一条撤销记录。</div>
+      </div>
+      <div class="modal-actions">
+        <button id="batchConfirm" class="btn btn-primary">确认批量指派（可撤销）</button>
+        <button id="batchCancel" class="btn">取消</button>
+      </div>
     </div>
   </div>
 
