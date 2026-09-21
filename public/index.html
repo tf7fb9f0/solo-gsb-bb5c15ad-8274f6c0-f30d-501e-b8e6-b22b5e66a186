@@ -84,6 +84,9 @@
       <input id="popupCodename" placeholder="统一代号，如：受访者A">
       <input id="popupAlias" placeholder="登记称呼（留空则仅此一处生效）">
     </div>
+    <label class="popup-batch" title="将全文中与所选片段完全相同的片段统一指派给所选人物（冲突项自动跳过）">
+      <input type="checkbox" id="popupBatch"> 批量指派全文相同片段
+    </label>
     <div class="popup-actions">
       <button id="popupOk" class="btn btn-primary">确定</button>
       <button id="popupCancel" class="btn">取消</button>
@@ -110,6 +113,23 @@
       <div class="modal-actions">
         <button id="mergeConfirm" class="btn btn-primary">确认合并（可撤销）</button>
         <button id="mergeCancel" class="btn">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 批量同文片段指派确认弹窗 -->
+  <div id="batchDialog" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-title">批量指派同文片段</div>
+      <div class="merge-preview">
+        <div class="batch-line">片段：<span id="batchFrag" class="batch-frag"></span></div>
+        <div class="batch-line">指派给：<span id="batchPerson" class="merge-target"></span></div>
+        <div id="batchCounts" class="batch-counts"></div>
+        <div class="hint">仅新增「可处理」区间；与既有显式框选、保留原文例外冲突的匹配一律跳过，不覆盖原有区间。整批作为一次操作，可整体撤销。</div>
+      </div>
+      <div class="modal-actions">
+        <button id="batchConfirm" class="btn btn-primary">确认批量指派（可撤销）</button>
+        <button id="batchCancel" class="btn">取消</button>
       </div>
     </div>
   </div>

@@ -7,8 +7,10 @@
  * 3. 最长称呼优先：称呼命中之间发生重叠时，更长的称呼优先，长度相同则先出现者优先；
  * 4. 原稿永不改动：匿名结果只体现在预览中，同时维护双向字符区间映射。
  *
- * 标记例外、恢复匿名、添加/删除/合并人物、框选均进入同一个撤销栈；
- * 合并人物为原子操作：一次入栈，撤销时按原 ID、列表位置、称呼与全部关联区间精确恢复。
+ * 标记例外、恢复匿名、添加/删除/合并人物、框选、批量同文指派均进入同一个撤销栈；
+ * 合并人物为原子操作：一次入栈，撤销时按原 ID、列表位置、称呼与全部关联区间精确恢复；
+ * 批量同文指派：按原稿从左到右取互不重叠的相同片段，仅新增与既有框选、例外均不冲突的
+ * 可处理项（不覆盖原有区间），整批作为一条撤销记录，撤销即恢复操作前的区间集合与预览。
  */
 (function () {
   'use strict';
@@ -19,7 +21,7 @@
     persons: [],       // { id, codename, aliases:[], color }
     selections: [],    // { id, start, end, personId } 显式框选
     exceptions: [],    // { id, start, end, personId } 保留原文例外
-    history: [],       // 撤销栈：person / selection / exception / restore / removePerson / mergePerson
+    history: [],       // 撤销栈：person / selection / batchSelection / exception / restore / removePerson / mergePerson
     currentPreview: '',
     currentMap: []     // { id, kind, oStart, oEnd, pStart, pEnd, personId, explicit, exId }
   };
@@ -38,9 +40,11 @@
   var personList = $('personList'), exceptionList = $('exceptionList'), statsEl = $('stats');
   var mappingBody = document.querySelector('#mappingTable tbody');
   var selPopup = $('selPopup'), popupPerson = $('popupPerson'), popupNewFields = $('popupNewFields');
-  var popupCodename = $('popupCodename'), popupAlias = $('popupAlias');
+  var popupCodename = $('popupCodename'), popupAlias = $('popupAlias'), popupBatch = $('popupBatch');
   var mergeDialog = $('mergeDialog'), mergeTargetEl = $('mergeTarget'), mergeSource = $('mergeSource');
   var mergeCodenames = $('mergeCodenames'), mergeAliases = $('mergeAliases'), mergeCounts = $('mergeCounts');
+  var batchDialog = $('batchDialog'), batchFrag = $('batchFrag'), batchPerson = $('batchPerson');
+  var batchCounts = $('batchCounts'), batchConfirm = $('batchConfirm');
   var toastEl = $('toast');
 
   // ---------- 工具 ----------
@@ -488,6 +492,75 @@
     toast('已将「' + source.codename + '」合并进「' + target.codename + '」，可撤销');
   }
 
+  // ---------- 批量同文片段指派 ----------
+  // 匹配规则：按原稿从左到右扫描，取互不重叠的相同片段；
+  // 冲突分类：与既有显式框选重叠 → 框选冲突（框选优先级最高，先判）；
+  //           否则与保留原文例外重叠 → 例外冲突；其余为可处理项。
+  // 确认后仅把可处理项新增为显式框选（不覆盖任何原有区间），整批一条撤销记录。
+  var pendingBatch = null; // { frag, target:{personId}|{newCodename,newAliases}, usable:[{start,end}] }
+
+  function findOccurrences(frag) {
+    var out = [];
+    var i = state.text.indexOf(frag);
+    while (i !== -1) {
+      out.push({ start: i, end: i + frag.length });
+      i = state.text.indexOf(frag, i + frag.length); // 互不重叠：从本项末尾继续
+    }
+    return out;
+  }
+
+  function overlapsAny(list, start, end) {
+    return list.some(function (it) { return start < it.end && end > it.start; });
+  }
+
+  function openBatchDialog(frag, target) {
+    var usable = [], clashSel = [], clashExc = [];
+    findOccurrences(frag).forEach(function (o) {
+      if (overlapsAny(state.selections, o.start, o.end)) clashSel.push(o);
+      else if (overlapsAny(state.exceptions, o.start, o.end)) clashExc.push(o);
+      else usable.push(o);
+    });
+    pendingBatch = { frag: frag, target: target, usable: usable };
+
+    batchFrag.textContent = frag;
+    batchPerson.textContent = target.personId
+      ? personById(target.personId).codename
+      : target.newCodename + '（新建人物）';
+    batchCounts.innerHTML = '';
+    var lines = [
+      { cls: 'batch-total', text: '全文匹配（从左到右、互不重叠）共 ' + (usable.length + clashSel.length + clashExc.length) + ' 处' },
+      { cls: 'batch-ok', text: '可处理：' + usable.length + ' 处（将新增为显式框选）' },
+      { cls: 'batch-clash', text: '与既有显式框选冲突：' + clashSel.length + ' 处（跳过）' },
+      { cls: 'batch-clash', text: '与保留原文例外冲突：' + clashExc.length + ' 处（跳过）' }
+    ];
+    lines.forEach(function (l) {
+      var div = document.createElement('div');
+      div.className = l.cls;
+      div.textContent = l.text;
+      batchCounts.appendChild(div);
+    });
+    batchConfirm.disabled = usable.length === 0;
+    batchDialog.classList.remove('hidden');
+  }
+
+  function closeBatchDialog() {
+    batchDialog.classList.add('hidden');
+    pendingBatch = null;
+  }
+
+  // 整批新增为显式框选，并作为一条撤销记录入栈
+  function batchAssign(personId, ranges) {
+    var added = ranges.map(function (r) {
+      var sel = { id: selSeq++, start: r.start, end: r.end, personId: personId };
+      state.selections.push(sel);
+      return sel;
+    });
+    state.history.push({ type: 'batchSelection', selections: added });
+    render();
+    var p = personById(personId);
+    toast('已批量指派 ' + added.length + ' 处同文片段给「' + (p ? p.codename : '') + '」，可撤销');
+  }
+
   // ---------- 保留原文例外 ----------
   function markException(mapItem) {
     if (mapItem.kind !== 'replace' || mapItem.explicit) return;
@@ -526,6 +599,13 @@
       case 'selection':
         state.selections = state.selections.filter(function (s) { return s.id !== action.selection.id; });
         toast('已撤销一次框选');
+        break;
+      case 'batchSelection':
+        // 整批撤销：移除该次批量新增的全部框选，恢复操作前的区间集合与预览
+        var batchIds = {};
+        action.selections.forEach(function (s) { batchIds[s.id] = true; });
+        state.selections = state.selections.filter(function (s) { return !batchIds[s.id]; });
+        toast('已撤销批量指派（' + action.selections.length + ' 处）');
         break;
       case 'exception':
         state.exceptions = state.exceptions.filter(function (x) { return x.id !== action.exception.id; });
@@ -588,6 +668,7 @@
     popupNewFields.classList.remove('hidden');
     popupCodename.value = '';
     popupAlias.value = state.text.slice(info.start, info.end);
+    popupBatch.checked = false;
 
     var x = Math.min(info.rect.left, window.innerWidth - 270);
     var y = info.rect.bottom + 8;
@@ -615,15 +696,28 @@
 
   $('popupOk').addEventListener('click', function () {
     if (!pendingSel) return;
-    var personId;
+    // 解析指派目标：已有人物，或延迟到确认时新建的人物
+    var target;
     if (popupPerson.value === '__new') {
       var codename = popupCodename.value.trim();
       if (!codename) { toast('请填写统一代号'); return; }
-      var aliases = parseAliases(popupAlias.value);
-      var person = addPerson(codename, aliases); // 人物规则入历史
-      personId = person.id;
+      target = { newCodename: codename, newAliases: parseAliases(popupAlias.value) };
     } else {
-      personId = Number(popupPerson.value);
+      target = { personId: Number(popupPerson.value) };
+    }
+
+    if (popupBatch.checked) {
+      // 批量模式：先分类统计，弹确认框；新建人物延迟到确认时创建
+      var frag = state.text.slice(pendingSel.start, pendingSel.end);
+      window.getSelection().removeAllRanges();
+      closePopup();
+      openBatchDialog(frag, target);
+      return;
+    }
+
+    var personId = target.personId;
+    if (target.newCodename) {
+      personId = addPerson(target.newCodename, target.newAliases).id; // 人物规则入历史
     }
     if (addSelection(personId, pendingSel.start, pendingSel.end)) {
       window.getSelection().removeAllRanges();
@@ -644,7 +738,7 @@
   });
 
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape') { closePopup(); closeMergeDialog(); }
+    if (e.key === 'Escape') { closePopup(); closeMergeDialog(); closeBatchDialog(); }
   });
 
   // ---------- 合并人物弹窗 ----------
@@ -664,6 +758,25 @@
     if (e.target === mergeDialog) closeMergeDialog(); // 点击遮罩关闭
   });
 
+  // ---------- 批量同文片段指派弹窗 ----------
+  $('batchConfirm').addEventListener('click', function () {
+    if (!pendingBatch || !pendingBatch.usable.length) { closeBatchDialog(); return; }
+    var target = pendingBatch.target;
+    var usable = pendingBatch.usable;
+    closeBatchDialog();
+    var personId = target.personId;
+    if (target.newCodename) {
+      personId = addPerson(target.newCodename, target.newAliases).id; // 人物规则单独入历史
+    }
+    batchAssign(personId, usable);
+  });
+
+  $('batchCancel').addEventListener('click', closeBatchDialog);
+
+  batchDialog.addEventListener('mousedown', function (e) {
+    if (e.target === batchDialog) closeBatchDialog(); // 点击遮罩关闭
+  });
+
   // ---------- 顶部操作 ----------
   $('btnLoadText').addEventListener('click', function () {
     var text = textInput.value;
@@ -678,6 +791,7 @@
     state.exceptions = [];
     state.history = [];
     closeMergeDialog();
+    closeBatchDialog();
     inputSection.classList.add('hidden');
     editorSection.classList.remove('hidden');
     $('btnResetText').classList.remove('hidden');
@@ -692,6 +806,7 @@
     inputSection.classList.remove('hidden');
     $('btnResetText').classList.add('hidden');
     closeMergeDialog();
+    closeBatchDialog();
     state.text = '';
     state.persons = [];
     state.selections = [];
